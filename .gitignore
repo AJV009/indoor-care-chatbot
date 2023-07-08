@@ -1,0 +1,6 @@
+__pycache__
+.vscode
+# remove evertything inside models and datasets folder
+/models/*
+/datasets/*
+/runs/*
