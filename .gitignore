@@ -4,3 +4,5 @@ __pycache__
 /models/*
 /datasets/*
 /runs/*
+.env
+.chroma
