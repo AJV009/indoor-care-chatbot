@@ -3,6 +3,7 @@ from typing import Dict, Tuple
 import numpy as np
 import cv2
 import random
+import math
 import requests
 
 from openvino.runtime import Model
@@ -148,69 +149,95 @@ def postprocess(
         results.append({"det": pred[:, :6].numpy(), "segment": segments})
     return results
 
-def calculate_center(box):
+def calculate_center_and_scale(box, real_world_sizes, label):
     """
-    Helper function for calculating the center of a bounding box
+    Calculate the center of a bounding box and its scale factor based on the size in pixels
+    and real-world size of the object (represented by label).
     Parameters:
         box (List): bounding box in format [x1, y1, x2, y2, score, label_id]
+        real_world_sizes (Dict): dictionary with the real-world sizes of objects.
+        label (int): label id of the object.
     Returns:
-        np.array: center of the bounding box
+        np.array: center of the bounding box and scale factor (in format [x_center, y_center, scale])
     """
     x_center = (box[0] + box[2]) / 2
     y_center = (box[1] + box[3]) / 2
-    return np.array([x_center, y_center])
+    pixel_width = box[2] - box[0]
+    pixel_height = box[3] - box[1]
 
-def calculate_distance_matrix(boxes):
-    n = len(boxes)
+    real_sizes = real_world_sizes[label][list(real_world_sizes[label].keys())[0]]
+
+    real_width = (real_sizes["width"][0] + real_sizes["width"][1]) / 2
+    real_height = (real_sizes["height"][0] + real_sizes["height"][1]) / 2
+    
+    # Use the larger of the two scales (width or height)
+    epsilon = 1e-7
+    scale = max(pixel_width/(real_width + epsilon), pixel_height/(real_height + epsilon))
+    return np.array([x_center, y_center, scale])
+
+def calculate_distance_matrix(centers):
+    n = len(centers)
     distance_matrix = np.zeros((n, n))
+    confidence_matrix = np.zeros((n, n))
+    camera_distances = np.zeros(n)
+    
     for i in range(n):
+        center1 = centers[i][:2]
+        
+        # Calculate distance from object to camera
+        camera_distances[i] = np.linalg.norm(center1) / centers[i][2]
+        
         for j in range(i+1, n):
-            box1 = boxes[i]
-            box2 = boxes[j]
+            center2 = centers[j][:2]
+            
+            # Calculate distance between centers in pixels
+            pixel_distance = np.linalg.norm(center1 - center2)
+            
+            # Scale pixel distance to real-world distance using the smaller of the two scales
+            real_distance = pixel_distance / min(centers[i][2], centers[j][2])
+            
+            # Calculate confidence as 1/(1 + real_distance), so it decreases as distance increases
+            confidence = 1 / (1 + real_distance)
+            
+            distance_matrix[i, j] = real_distance
+            distance_matrix[j, i] = real_distance
+            
+            confidence_matrix[i, j] = confidence
+            confidence_matrix[j, i] = confidence
+    
+    return distance_matrix, confidence_matrix, camera_distances
 
-            # Calculate intersection
-            x_intersection = max(0, min(box1[2], box2[2]) - max(box1[0], box2[0]))
-            y_intersection = max(0, min(box1[3], box2[3]) - max(box1[1], box2[1]))
-            intersection = x_intersection * y_intersection
-
-            # If boxes intersect, distance is zero
-            if intersection > 0:
-                distance = 0
-            else:
-                # Calculate distance between closest edges
-                x_distance = max(0, max(box1[0], box2[0]) - min(box1[2], box2[2]))
-                y_distance = max(0, max(box1[1], box2[1]) - min(box1[3], box2[3]))
-                distance = np.sqrt(x_distance**2 + y_distance**2)
-
-            distance_matrix[i, j] = distance
-            distance_matrix[j, i] = distance
-
-    return distance_matrix
-
-def draw_results(results:Dict, source_image:np.ndarray, label_map:Dict):
+def draw_results(results:Dict, source_image:np.ndarray, label_map:Dict, real_world_sizes:Dict):
     """
     Helper function for drawing bounding boxes on image
     Parameters:
-        image_res (np.ndarray): detection predictions in format [x1, y1, x2, y2, score, label_id]
+        results (Dict): detection results in format {"det": [x1, y1, x2, y2, score, label_id], ...}
         source_image (np.ndarray): input image for drawing
-        label_map; (Dict[int, str]): label_id to class name mapping
+        label_map (Dict[int, str]): label_id to class name mapping
+        real_world_sizes (Dict): dictionary with the real-world sizes of objects.
     Returns:
         source_image: image with drawn bounding boxes
-        distance_array: array of distances between every two detected objects
+        distance_array: array of distances and confidences between every two detected objects
     """
     boxes = results["det"]
     masks = results.get("segment")
     h, w = source_image.shape[:2]
     
-    boxes_coords = [box[:4] for box in boxes]
+    centers = [calculate_center_and_scale(box, real_world_sizes, int(box[5])) for box in boxes]
     distance_array = []
     
-    if len(boxes_coords) > 1:
-        distance_matrix = calculate_distance_matrix(boxes_coords)
+    if len(centers) > 1:
+        distance_matrix, confidence_matrix, camera_distances = calculate_distance_matrix(centers)
         
-        for i in range(len(boxes_coords)):
-            for j in range(i+1, len(boxes_coords)):
-                distance_array.append([label_map[int(boxes[i][5])], label_map[int(boxes[j][5])], distance_matrix[i][j]])
+        for i in range(len(centers)):
+            # Add distance from object to camera
+            distance_array.append([label_map[int(boxes[i][5])], "view_camera", camera_distances[i], 1 / (1 + camera_distances[i])])
+            
+            for j in range(i+1, len(centers)):
+                distance_array.append([label_map[int(boxes[i][5])], label_map[int(boxes[j][5])], distance_matrix[i, j], confidence_matrix[i, j]])
+    else:
+        # If there's only one object, add its distance to the camera
+        distance_array.append([label_map[int(boxes[0][5])], "view_camera", np.linalg.norm(centers[0][:2]) / centers[0][2], 1 / (1 + np.linalg.norm(centers[0][:2]) / centers[0][2])])
 
     for idx, (*xyxy, conf, lbl) in enumerate(boxes):
         label = f'{label_map[int(lbl)]} {conf:.2f}'
