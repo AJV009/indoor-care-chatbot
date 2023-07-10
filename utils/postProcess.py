@@ -3,7 +3,6 @@ from typing import Dict, Tuple
 import numpy as np
 import cv2
 import random
-import math
 import requests
 
 from openvino.runtime import Model
