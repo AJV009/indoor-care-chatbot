@@ -224,24 +224,27 @@ def draw_results(results:Dict, source_image:np.ndarray, label_map:Dict, real_wor
     
     centers = [calculate_center_and_scale(box, real_world_sizes, int(box[5])) for box in boxes]
     distance_array = []
-    
-    if len(centers) > 1:
-        distance_matrix, confidence_matrix, camera_distances = calculate_distance_matrix(centers)
-        
-        for i in range(len(centers)):
-            # Add distance from object to camera
-            distance_array.append([label_map[int(boxes[i][5])], "view_camera", camera_distances[i], 1 / (1 + camera_distances[i])])
+    if boxes is not None:
+        if len(centers) > 1:
+            distance_matrix, confidence_matrix, camera_distances = calculate_distance_matrix(centers)
             
-            for j in range(i+1, len(centers)):
-                distance_array.append([label_map[int(boxes[i][5])], label_map[int(boxes[j][5])], distance_matrix[i, j], confidence_matrix[i, j]])
-    else:
-        # If there's only one object, add its distance to the camera
-        distance_array.append([label_map[int(boxes[0][5])], "view_camera", np.linalg.norm(centers[0][:2]) / centers[0][2], 1 / (1 + np.linalg.norm(centers[0][:2]) / centers[0][2])])
+            for i in range(len(centers)):
+                # Add distance from object to camera
+                distance_array.append([label_map[int(boxes[i][5])], "view_camera", camera_distances[i], 1 / (1 + camera_distances[i])])
+                
+                for j in range(i+1, len(centers)):
+                    distance_array.append([label_map[int(boxes[i][5])], label_map[int(boxes[j][5])], distance_matrix[i, j], confidence_matrix[i, j]])
+        elif len(centers) > 0:
+            # If there's only one object, add its distance to the camera
+            distance_array.append([label_map[int(boxes[0][5])], "view_camera", np.linalg.norm(centers[0][:2]) / centers[0][2], 1 / (1 + np.linalg.norm(centers[0][:2]) / centers[0][2])])
+        else:
+            # If there are no objects, return empty array
+            return source_image, []
 
-    for idx, (*xyxy, conf, lbl) in enumerate(boxes):
-        label = f'{label_map[int(lbl)]} {conf:.2f}'
-        mask = masks[idx] if masks is not None else None
-        source_image = plot_one_box(xyxy, source_image, mask=mask, label=label, color=colors(int(lbl)), line_thickness=1)
+        for idx, (*xyxy, conf, lbl) in enumerate(boxes):
+            label = f'{label_map[int(lbl)]} {conf:.2f}'
+            mask = masks[idx] if masks is not None else None
+            source_image = plot_one_box(xyxy, source_image, mask=mask, label=label, color=colors(int(lbl)), line_thickness=1)
     
     return source_image, distance_array
 
